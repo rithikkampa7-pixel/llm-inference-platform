@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    name: validate rules, config and dashboards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: promtool check rules
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/w" \
+            --entrypoint promtool prom/prometheus:v3.1.0 \
+            check rules /w/rules/sli-recording.yaml /w/rules/slo-alerts.yaml
+
+      - name: amtool check alertmanager config
+        run: |
+          docker run --rm -v "$PWD/observability/alertmanager:/w" \
+            --entrypoint amtool prom/alertmanager:v0.28.0 \
+            check-config /w/alertmanager.yml
+
+      - name: docker compose config
+        run: docker compose config -q
+
+      - name: dashboard JSON parses
+        run: |
+          python3 - <<'PY'
+          import glob, json
+          for f in glob.glob("observability/grafana/dashboards/*.json"):
+              d = json.load(open(f))
+              assert d.get("panels"), f"{f} has no panels"
+              print(f, "ok", len(d["panels"]), "panels")
+          PY
+
+  lint:
+    name: lint gateway and bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check gateway/ bench/
+      - run: ruff format --check gateway/ bench/
+
+  smoke:
+    name: stack serves tokens and SLIs report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: start stack
+        run: docker compose up -d --build
+
+      - name: wait for gateway
+        run: |
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:8001/healthz >/dev/null && break
+            sleep 3
+          done
+          curl -sf http://localhost:8001/healthz
+
+      - name: streaming request returns tokens
+        run: |
+          OUT=$(curl -sf -N -XPOST http://localhost:8001/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{"prompt_tokens":128,"max_tokens":5,"stream":true}')
+          echo "$OUT"
+          echo "$OUT" | grep -q "tok0" || { echo "no tokens streamed"; exit 1; }
+          echo "$OUT" | grep -q "\[DONE\]" || { echo "stream not terminated"; exit 1; }
+
+      - name: drive load so the SLIs have samples
+        run: |
+          docker build -q -t llm-bench ./bench
+          NET=$(docker network ls --format '{{.Name}}' | grep llm-inference-platform | head -1)
+          docker run --rm --network "$NET" llm-bench --concurrency 8 --duration 30
+          sleep 45
+
+      - name: assert SLIs report real values
+        run: |
+          check() {
+            VAL=$(curl -sf --get 'http://localhost:9091/api/v1/query' \
+              --data-urlencode "query=$1" \
+              | python3 -c "import json,sys;r=json.load(sys.stdin)['data']['result'];print(r[0]['value'][1] if r else 'NODATA')")
+            echo "  $1 = $VAL"
+            [ "$VAL" = "NODATA" ] && { echo "FAIL: $1 returned no data"; exit 1; }
+            return 0
+          }
+          # A healthy service must report 0, not NO DATA. The error-outcome
+          # series does not exist until the first failure, so this would
+          # regress silently without an explicit assertion.
+          check 'sli:availability:error_ratio_rate5m'
+          check 'sli:ttft:slow_ratio_rate5m'
+          check 'sli:shed:reject_ratio_rate5m'
+          check 'llm:tokens_per_second:completion_rate5m'
+          check 'llm:slot_utilisation:ratio'
+
+      - name: assert alert rules loaded
+        run: |
+          curl -sf 'http://localhost:9091/api/v1/rules' | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          names=[r['name'] for g in d['data']['groups'] for r in g['rules'] if r['type']=='alerting']
+          print('loaded alerts:', names)
+          for required in ['TTFTErrorBudgetBurnFast','LoadSheddingActive','DecodeSlotsSaturated']:
+              assert required in names, f'missing {required}'
+          "
+
+      - name: dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: teardown
+        if: always()
+        run: docker compose down -v
