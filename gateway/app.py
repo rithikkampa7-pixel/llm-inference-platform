@@ -12,13 +12,14 @@ The gateway owns three things the model server does not:
                 separately so a latency incident can be attributed to
                 saturation or to the backend.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -126,8 +127,7 @@ async def chat(req: ChatRequest, request: Request):
     if _queued >= MAX_QUEUE:
         REQUESTS.labels(MODEL, "rejected").inc()
         return JSONResponse(
-            {"error": {"message": "queue full, retry later",
-                       "type": "capacity"}},
+            {"error": {"message": "queue full, retry later", "type": "capacity"}},
             status_code=429,
             headers={"Retry-After": "1"},
         )
@@ -204,8 +204,7 @@ async def _complete_blocking(gen_req: GenerationRequest, arrived: float):
     _charge(gen_req.prompt_tokens, len(chunks))
     return {
         "model": gen_req.model,
-        "choices": [{"message": {"role": "assistant",
-                                 "content": "".join(chunks)}}],
+        "choices": [{"message": {"role": "assistant", "content": "".join(chunks)}}],
         "usage": {
             "prompt_tokens": gen_req.prompt_tokens,
             "completion_tokens": len(chunks),

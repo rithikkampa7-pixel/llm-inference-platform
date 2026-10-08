@@ -5,6 +5,7 @@ shows notifications arriving. This exists so the repo demonstrates the full
 path -- rule fires, Alertmanager routes, receiver is notified -- without
 needing a PagerDuty or Slack secret.
 """
+
 import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer

@@ -16,6 +16,7 @@ Usage:
   python bench/loadgen.py --concurrency 16 --duration 60
   python bench/loadgen.py --concurrency 64 --duration 60 --prompt-tokens 4096
 """
+
 from __future__ import annotations
 
 import argparse
@@ -59,7 +60,7 @@ async def one_request(
                     gaps.append(now - last)
                 last = now
                 tokens += 1
-    except Exception as exc:  # noqa: BLE001 - any transport failure counts
+    except Exception as exc:
         return {"outcome": "error", "detail": repr(exc)}
 
     return {
@@ -84,7 +85,7 @@ def pct(values: list[float], p: float) -> float:
     if not values:
         return float("nan")
     ordered = sorted(values)
-    idx = min(int(round(p / 100 * (len(ordered) - 1))), len(ordered) - 1)
+    idx = min(round(p / 100 * (len(ordered) - 1)), len(ordered) - 1)
     return ordered[idx]
 
 
@@ -105,11 +106,18 @@ async def main() -> None:
         f"-> {args.concurrency} concurrent, {args.duration}s, "
         f"prompt={args.prompt_tokens} max_tokens={args.max_tokens}"
     )
-    await asyncio.gather(*[
-        worker(stop_at, results, url=args.url,
-               prompt_tokens=args.prompt_tokens, max_tokens=args.max_tokens)
-        for _ in range(args.concurrency)
-    ])
+    await asyncio.gather(
+        *[
+            worker(
+                stop_at,
+                results,
+                url=args.url,
+                prompt_tokens=args.prompt_tokens,
+                max_tokens=args.max_tokens,
+            )
+            for _ in range(args.concurrency)
+        ]
+    )
     wall = time.perf_counter() - wall_start
 
     ok = [r for r in results if r["outcome"] == "ok"]
@@ -121,8 +129,9 @@ async def main() -> None:
 
     print(f"\n{'requests':<22}{len(results)}")
     print(f"{'  ok':<22}{len(ok)}")
-    print(f"{'  rejected (429)':<22}{rejected}"
-          f"  ({rejected / max(len(results), 1):.2%})")
+    print(
+        f"{'  rejected (429)':<22}{rejected}  ({rejected / max(len(results), 1):.2%})"
+    )
     print(f"{'  errors':<22}{errors}")
     print(f"\n{'throughput':<22}{total_tokens / wall:.1f} completion tok/s")
     print(f"{'request rate':<22}{len(results) / wall:.1f} req/s")

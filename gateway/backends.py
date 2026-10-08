@@ -18,13 +18,15 @@ is calibrated to reproduce three behaviours that matter operationally:
      latency/throughput tradeoff in LLM serving.
   3. Token timing is jittery, not uniform, so percentiles are meaningful.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import random
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
 
 @dataclass
@@ -110,8 +112,10 @@ class OpenAICompatibleBackend:
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
-                "POST", f"{self.base_url}/v1/chat/completions",
-                json=body, headers=headers,
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=body,
+                headers=headers,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

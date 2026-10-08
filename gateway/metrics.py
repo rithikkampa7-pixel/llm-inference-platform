@@ -16,6 +16,7 @@ request-duration histogram hides almost everything that matters:
 So the SLIs here are TTFT, inter-token latency, and queue wait -- measured
 separately -- plus token counters for cost.
 """
+
 from prometheus_client import Counter, Gauge, Histogram
 
 # Time to first token. Buckets cluster tightly below 1s because that is where

@@ -1,0 +1,11 @@
+line-length = 88
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "RUF"]
+
+[lint.isort]
+# app.py imports these as top-level modules because they are copied flat into
+# the image, not installed as a package. Without this, ruff sorts them as
+# third-party and I001 fails.
+known-first-party = ["app", "backends", "metrics"]
