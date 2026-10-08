@@ -28,7 +28,7 @@ groups:
             {{ $value | humanizePercentage }} of streaming requests waited more
             than 500ms for a first token over the last hour, against a 5%
             budget. Check slot utilisation before blaming the model.
-          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+          runbook_url: "https://github.com/rithikkampa7-pixel/llm-inference-platform/blob/main/docs/runbook-ttft.md"
 
       - alert: TTFTErrorBudgetBurnSlow
         expr: |
@@ -40,7 +40,7 @@ groups:
           burn_rate: "6"
         annotations:
           summary: "First-token latency degraded over six hours"
-          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+          runbook_url: "https://github.com/rithikkampa7-pixel/llm-inference-platform/blob/main/docs/runbook-ttft.md"
 
   - name: slo_availability
     rules:
@@ -60,7 +60,7 @@ groups:
             {{ $value | humanizePercentage }} of accepted requests returned an
             error. Rejections (429) are tracked separately and are NOT counted
             here, so this is a genuine backend failure, not overload.
-          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+          runbook_url: "https://github.com/rithikkampa7-pixel/llm-inference-platform/blob/main/docs/runbook-ttft.md"
 
   - name: slo_capacity
     rules:
