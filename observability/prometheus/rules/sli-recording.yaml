@@ -1,0 +1,138 @@
+# Inference SLIs.
+#
+# Three separate SLIs, because for an LLM endpoint they fail independently and
+# have different remedies:
+#
+#   ttft         -- is the first token fast? Fix: more capacity, shorter
+#                   prompts, better batching.
+#   availability -- did the request succeed? Fix: debug the backend.
+#   shed         -- are we turning users away? Fix: scale out. A 429 is the
+#                   system working as designed under overload, but it is still
+#                   a bad experience, so it gets its own budget rather than
+#                   being hidden or lumped in with 5xx.
+#
+# All ratios use the le="+Inf" bucket as the denominator rather than _count,
+# so numerator and denominator are the same series family and rate()
+# extrapolates them identically.
+groups:
+  - name: sli_ttft
+    interval: 30s
+    rules:
+      # Share of STREAMING requests whose first token took longer than 500ms.
+      # Non-streaming requests are excluded: TTFT is not user-visible there,
+      # and including them would mix two different experiences in one number.
+      - record: sli:ttft:slow_ratio_rate5m
+        expr: |
+          clamp_min(
+            1 - (
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="0.5",stream="true"}[5m]))
+                /
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="+Inf",stream="true"}[5m]))
+            ),
+            0
+          )
+
+      - record: sli:ttft:slow_ratio_rate1h
+        expr: |
+          clamp_min(
+            1 - (
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="0.5",stream="true"}[1h]))
+                /
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="+Inf",stream="true"}[1h]))
+            ),
+            0
+          )
+
+      - record: sli:ttft:slow_ratio_rate6h
+        expr: |
+          clamp_min(
+            1 - (
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="0.5",stream="true"}[6h]))
+                /
+              sum(rate(llm_time_to_first_token_seconds_bucket{le="+Inf",stream="true"}[6h]))
+            ),
+            0
+          )
+
+  - name: sli_availability
+    interval: 30s
+    rules:
+      # `or vector(0)` is load-bearing, not defensive noise.
+      #
+      # llm_requests_total{outcome="error"} does not exist until the first
+      # error happens. Dividing an empty vector by anything yields an empty
+      # vector, so on a perfectly healthy service this SLI recorded NO DATA
+      # rather than 0 -- indistinguishable from a broken exporter, and it
+      # would have tripped an absent() meta-alert on a working system.
+      #
+      # clamp_min on the denominator avoids a divide-by-zero NaN during the
+      # window before any traffic at all has arrived.
+      # Errors over requests the system actually accepted. Rejections are
+      # excluded here and tracked by sli:shed below -- a load-shedding event
+      # should not also consume the availability budget, or one incident
+      # drains two budgets and the signal about *which* thing broke is lost.
+      - record: sli:availability:error_ratio_rate5m
+        expr: |
+          clamp_min(
+            (sum(rate(llm_requests_total{outcome="error"}[5m])) or vector(0))
+              /
+            clamp_min(sum(rate(llm_requests_total{outcome=~"ok|error"}[5m])), 1e-9),
+            0
+          )
+
+      - record: sli:availability:error_ratio_rate1h
+        expr: |
+          clamp_min(
+            (sum(rate(llm_requests_total{outcome="error"}[1h])) or vector(0))
+              /
+            clamp_min(sum(rate(llm_requests_total{outcome=~"ok|error"}[1h])), 1e-9),
+            0
+          )
+
+      - record: sli:availability:error_ratio_rate6h
+        expr: |
+          clamp_min(
+            (sum(rate(llm_requests_total{outcome="error"}[6h])) or vector(0))
+              /
+            clamp_min(sum(rate(llm_requests_total{outcome=~"ok|error"}[6h])), 1e-9),
+            0
+          )
+
+  - name: sli_shed
+    interval: 30s
+    rules:
+      - record: sli:shed:reject_ratio_rate5m
+        expr: |
+          clamp_min(
+            (sum(rate(llm_requests_total{outcome="rejected"}[5m])) or vector(0))
+              /
+            clamp_min(sum(rate(llm_requests_total[5m])), 1e-9),
+            0
+          )
+
+      - record: sli:shed:reject_ratio_rate1h
+        expr: |
+          clamp_min(
+            (sum(rate(llm_requests_total{outcome="rejected"}[1h])) or vector(0))
+              /
+            clamp_min(sum(rate(llm_requests_total[1h])), 1e-9),
+            0
+          )
+
+  - name: derived_throughput
+    interval: 30s
+    rules:
+      - record: llm:tokens_per_second:completion_rate5m
+        expr: sum(rate(llm_tokens_total{direction="completion"}[5m]))
+
+      - record: llm:cost_usd_per_hour:rate5m
+        expr: sum(rate(llm_cost_usd_total[5m])) * 3600
+
+      # Utilisation of configured decode slots. Sustained >0.9 means the next
+      # traffic increase becomes queue wait, which becomes TTFT.
+      - record: llm:slot_utilisation:ratio
+        expr: |
+          clamp_min(
+            sum(llm_active_requests) / clamp_min(sum(llm_decode_slots), 1),
+            0
+          )

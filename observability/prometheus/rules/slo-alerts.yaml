@@ -1,0 +1,133 @@
+# SLOs for the inference gateway.
+#
+#   TTFT          95% of streaming requests get a first token within 500ms
+#                 -> budget 5%  (thresholds = burn * 0.05)
+#   Availability  99.9% of accepted requests succeed
+#                 -> budget 0.1% (thresholds = burn * 0.001)
+#   Shed          <1% of requests are rejected with 429
+#                 -> budget 1%  (thresholds = burn * 0.01)
+#
+# Same multi-window burn-rate structure as any SLO: a long window for
+# significance, a short one for currency.
+groups:
+  - name: slo_ttft
+    rules:
+      - alert: TTFTErrorBudgetBurnFast
+        expr: |
+          sli:ttft:slow_ratio_rate1h > (14.4 * 0.05)
+            and
+          sli:ttft:slow_ratio_rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: page
+          slo: ttft
+          burn_rate: "14.4"
+        annotations:
+          summary: "First-token latency is burning its budget 14.4x too fast"
+          description: >-
+            {{ $value | humanizePercentage }} of streaming requests waited more
+            than 500ms for a first token over the last hour, against a 5%
+            budget. Check slot utilisation before blaming the model.
+          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+
+      - alert: TTFTErrorBudgetBurnSlow
+        expr: |
+          sli:ttft:slow_ratio_rate6h > (6 * 0.05)
+        for: 30m
+        labels:
+          severity: ticket
+          slo: ttft
+          burn_rate: "6"
+        annotations:
+          summary: "First-token latency degraded over six hours"
+          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+
+  - name: slo_availability
+    rules:
+      - alert: InferenceAvailabilityBurnFast
+        expr: |
+          sli:availability:error_ratio_rate1h > (14.4 * 0.001)
+            and
+          sli:availability:error_ratio_rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+          burn_rate: "14.4"
+        annotations:
+          summary: "Inference requests are failing well above budget"
+          description: >-
+            {{ $value | humanizePercentage }} of accepted requests returned an
+            error. Rejections (429) are tracked separately and are NOT counted
+            here, so this is a genuine backend failure, not overload.
+          runbook_url: "https://github.com/OWNER/llm-inference-platform/blob/main/docs/runbook-ttft.md"
+
+  - name: slo_capacity
+    rules:
+      - alert: LoadSheddingActive
+        expr: |
+          sli:shed:reject_ratio_rate1h > (14.4 * 0.01)
+            and
+          sli:shed:reject_ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+          slo: shed
+          burn_rate: "14.4"
+        annotations:
+          summary: "Gateway is shedding load — users are getting 429s"
+          description: >-
+            {{ $value | humanizePercentage }} of requests rejected. The queue
+            is full. This is the system protecting itself correctly, but it is
+            still a capacity shortfall: scale out decode slots or replicas.
+
+      # Leading indicator, deliberately NOT an SLO breach. Saturation precedes
+      # a TTFT incident by minutes, which is enough time to scale before users
+      # are affected. Ticket, not page.
+      - alert: DecodeSlotsSaturated
+        expr: llm:slot_utilisation:ratio > 0.9
+        for: 10m
+        labels:
+          severity: ticket
+          slo: capacity
+        annotations:
+          summary: "Decode slots >90% utilised for 10 minutes"
+          description: >-
+            Not a breach yet. At this utilisation the next traffic increase
+            turns into queue wait, and queue wait turns into TTFT. Scale now
+            rather than after the page.
+
+  - name: slo_cost
+    rules:
+      # Cost is an operational signal here, not a finance report. A runaway
+      # retry loop or a prompt-size regression shows up as spend long before
+      # anyone reads a monthly bill.
+      - alert: InferenceSpendAnomaly
+        expr: |
+          llm:cost_usd_per_hour:rate5m
+            >
+          3 * avg_over_time(llm:cost_usd_per_hour:rate5m[6h] offset 1h)
+        for: 15m
+        labels:
+          severity: ticket
+          slo: cost
+        annotations:
+          summary: "Inference spend is 3x its recent baseline"
+          description: >-
+            Current burn {{ $value | printf "%.2f" }} USD/hour. Usually a
+            prompt-size regression, a retry storm, or traffic growth. Check
+            llm_tokens_total by direction to tell which.
+
+  - name: slo_meta
+    rules:
+      - alert: InferenceSLIDataMissing
+        expr: absent(sli:ttft:slow_ratio_rate5m)
+        for: 10m
+        labels:
+          severity: page
+          slo: ttft
+        annotations:
+          summary: "TTFT SLI has stopped reporting"
+          description: >-
+            An SLI that reports nothing looks exactly like a healthy one. The
+            SLO is unmeasurable until this is fixed.
