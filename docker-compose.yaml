@@ -1,0 +1,69 @@
+# make up brings up the gateway, Prometheus, Alertmanager, Grafana and an
+# alert sink. Defaults to the simulated backend so it runs with no GPU, no
+# API key and no network.
+#
+# To point it at a real model instead:
+#   BACKEND=openai OPENAI_BASE_URL=http://host.docker.internal:11434 make up
+services:
+  gateway:
+    build: ./gateway
+    ports: ["8001:8000"]   # 8001 on the host, avoids sre-slo-platform
+    environment:
+      MODEL_NAME: "sim-7b-instruct"
+      DECODE_SLOTS: "8"          # concurrent decode slots (batch ceiling)
+      MAX_QUEUE_DEPTH: "32"      # admission limit; beyond this -> 429
+      SIM_DECODE_TPS: "55"       # per-request tokens/sec at batch size 1
+      SIM_BATCH_PENALTY: "0.06"  # slowdown per additional concurrent request
+      PROMPT_USD_PER_M: "0.50"
+      COMPLETION_USD_PER_M: "1.50"
+      BACKEND: "${BACKEND:-simulated}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports: ["9091:9090"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prom-data:/prometheus
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    ports: ["9094:9093"]
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    ports: ["3001:3000"]          # 3001 so it can run alongside sre-slo-platform
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+  alert-sink:
+    image: python:3.12-slim
+    command: ["python", "-u", "/app/sink.py"]
+    volumes:
+      - ./tools/alert-sink/sink.py:/app/sink.py:ro
+
+volumes:
+  prom-data: {}

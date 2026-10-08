@@ -1,0 +1,41 @@
+# Routing reflects the severity labels the SLO rules attach:
+#   severity=page   -> wake someone up
+#   severity=ticket -> queue for business hours
+#
+# Both go to a local webhook here so the repo runs with no external secrets.
+# In a real deployment these become PagerDuty and Jira receivers.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "slo"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="page"']
+      receiver: pager
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers: ['severity="ticket"']
+      receiver: tickets
+      repeat_interval: 24h
+
+# A firing fast-burn page makes the slow-burn and chronic alerts redundant
+# noise for the same underlying problem. Suppress the quieter ones.
+inhibit_rules:
+  - source_matchers: ['severity="page"', 'burn_rate="14.4"']
+    target_matchers: ['severity=~"page|ticket"', 'burn_rate=~"6|3|1"']
+    equal: ["slo"]
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: "http://alert-sink:8080/alerts"
+  - name: pager
+    webhook_configs:
+      - url: "http://alert-sink:8080/alerts?route=pager"
+  - name: tickets
+    webhook_configs:
+      - url: "http://alert-sink:8080/alerts?route=tickets"

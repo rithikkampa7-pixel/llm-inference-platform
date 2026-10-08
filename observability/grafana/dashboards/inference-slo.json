@@ -1,0 +1,133 @@
+{
+  "uid": "inference-slo",
+  "title": "LLM Inference — SLOs, Throughput and Cost",
+  "tags": ["llm", "slo", "inference"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "TTFT SLI — share slower than 500ms",
+      "description": "Budget is 5%. Streaming requests only.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 0.05 },
+            { "color": "red", "value": 0.2 }
+          ]}
+        }
+      },
+      "targets": [{ "refId": "A", "expr": "sli:ttft:slow_ratio_rate5m" }]
+    },
+    {
+      "type": "stat",
+      "title": "Load shed (429 ratio)",
+      "description": "Budget is 1%. Non-zero means users are being turned away.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 0.01 }
+          ]}
+        }
+      },
+      "targets": [{ "refId": "A", "expr": "sli:shed:reject_ratio_rate5m" }]
+    },
+    {
+      "type": "stat",
+      "title": "Decode slot utilisation",
+      "description": "Above 0.9 sustained, the next traffic increase becomes queue wait.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 0.75 },
+            { "color": "red", "value": 0.9 }
+          ]}
+        }
+      },
+      "targets": [{ "refId": "A", "expr": "llm:slot_utilisation:ratio" }]
+    },
+    {
+      "type": "stat",
+      "title": "Spend rate (USD/hour)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 3 } },
+      "targets": [{ "refId": "A", "expr": "llm:cost_usd_per_hour:rate5m" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to first token — percentiles",
+      "description": "The 500ms SLO line is what p95 is measured against. p99 diverging from p95 means a subset of requests (long prompts, or queue victims) is suffering.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(llm_time_to_first_token_seconds_bucket{stream=\"true\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_time_to_first_token_seconds_bucket{stream=\"true\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(llm_time_to_first_token_seconds_bucket{stream=\"true\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue wait vs TTFT — attribution",
+      "description": "If queue wait tracks TTFT, the gateway is saturated and scaling fixes it. If TTFT rises while queue wait stays flat, the backend got slower and scaling will not help.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_queue_wait_seconds_bucket[5m])))", "legendFormat": "queue wait p95" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_time_to_first_token_seconds_bucket{stream=\"true\"}[5m])))", "legendFormat": "TTFT p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput — completion tokens/sec",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "none" } },
+      "targets": [
+        { "refId": "A", "expr": "llm:tokens_per_second:completion_rate5m", "legendFormat": "completion tok/s" },
+        { "refId": "B", "expr": "sum(rate(llm_tokens_total{direction=\"prompt\"}[5m]))", "legendFormat": "prompt tok/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Concurrency — active vs queued",
+      "description": "Active is the effective batch size. Once active pins at the slot limit, every extra request lands in the queue.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 13 },
+      "targets": [
+        { "refId": "A", "expr": "sum(llm_active_requests)", "legendFormat": "active (batch size)" },
+        { "refId": "B", "expr": "sum(llm_queue_depth)", "legendFormat": "queued" },
+        { "refId": "C", "expr": "sum(llm_decode_slots)", "legendFormat": "slot limit" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request outcomes",
+      "description": "rejected (429) is tracked apart from error (5xx) because they have different causes and different fixes.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(llm_requests_total[5m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "type": "heatmap",
+      "title": "Inter-token latency distribution",
+      "description": "Smoothness of the stream. A widening band under load is batching contention, and is felt by users as stuttering output.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (le) (rate(llm_inter_token_latency_seconds_bucket[5m]))", "format": "heatmap", "legendFormat": "{{le}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
